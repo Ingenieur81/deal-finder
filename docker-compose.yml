@@ -1,0 +1,16 @@
+services:
+  deal-finder:
+    build: .
+    image: local/deal-finder:1.0
+    container_name: deal-finder
+    restart: unless-stopped
+    env_file:
+      - ${ENV_FILE:-.env}
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./data:/data
+      # Uncomment after creating firebase-service-account.json in this folder.
+      # - ./firebase-service-account.json:/run/secrets/firebase-service-account.json:ro
+    security_opt:
+      - no-new-privileges:true

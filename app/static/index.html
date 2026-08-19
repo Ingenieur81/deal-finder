@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Deal Finder</title><link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <main class="shell">
+    <header><div><p class="eyebrow">SELF-HOSTED PRICE WATCH</p><h1>Deal Finder</h1></div><p id="summary">Loading watchlist…</p></header>
+    <section class="card form-card"><h2 id="form-title">Add an item</h2>
+      <form id="item-form">
+        <input id="item-id" type="hidden">
+        <label>Item name<input id="name" required minlength="2" placeholder="Gaming Laptop"></label>
+        <label>Location / region<input id="region" required placeholder="United States"></label>
+        <label>Minimum price <span class="muted">optional</span><input id="min_price" type="number" min="0" step="0.01" placeholder="800"></label>
+        <label>Maximum price <span class="muted">optional</span><input id="max_price" type="number" min="0" step="0.01" placeholder="1200"></label>
+        <label>Currency<input id="currency" required maxlength="8" value="USD" placeholder="USD"></label>
+        <label>Notify via<select id="notification_method"><option value="email">Email</option><option value="android">Android push (FCM)</option></select></label>
+        <label id="target-label">Email address<input id="notification_target" required type="email" placeholder="you@example.com"></label>
+        <label class="switch"><input id="enabled" type="checkbox" checked><span>Enable monitoring</span></label>
+        <div class="form-actions"><button type="submit">Save watch</button><button id="cancel" class="secondary" type="button" hidden>Cancel edit</button></div>
+      </form>
+    </section>
+    <section class="card"><div class="section-title"><h2>Watchlist</h2><button id="refresh" class="secondary">Refresh</button></div>
+      <div class="table-wrap"><table><thead><tr><th>Item</th><th>Target price</th><th>Region</th><th>Notify</th><th>Status</th><th>Last check</th><th>Actions</th></tr></thead><tbody id="items"></tbody></table></div>
+    </section>
+    <p id="notice" role="status"></p>
+  </main>
+  <dialog id="history-dialog"><div class="dialog-head"><h2 id="history-title">Price history</h2><button id="close-history" class="secondary">Close</button></div><div id="history"></div></dialog>
+  <script src="/static/app.js"></script>
+</body>
+</html>
