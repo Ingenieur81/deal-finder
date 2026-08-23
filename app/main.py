@@ -11,13 +11,14 @@ from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Literal
+from urllib.parse import urlparse
 
 import httpx
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from fastapi import Depends, FastAPI, HTTPException, Request, status
+from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import DateTime, ForeignKey, Integer, Numeric, String, Text, create_engine, select
+from sqlalchemy import DateTime, ForeignKey, Integer, Numeric, String, Text, create_engine, event, select
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, relationship, sessionmaker
 
 from .notifications import NotificationError, send_notification
@@ -31,9 +32,19 @@ SEARCH_INTERVAL_MINUTES = max(5, int(os.getenv("SEARCH_INTERVAL_MINUTES", "60"))
 SERPAPI_API_KEY = os.getenv("SERPAPI_API_KEY", "")
 STATIC_DIR = Path(__file__).parent / "static"
 
-engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {})
+SQLITE_DATABASE = DATABASE_URL.startswith("sqlite")
+engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False, "timeout": 30} if SQLITE_DATABASE else {})
 SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
 scheduler = AsyncIOScheduler(timezone="UTC")
+
+if SQLITE_DATABASE:
+    @event.listens_for(engine, "connect")
+    def configure_sqlite(connection, _: object) -> None:
+        """Prevent transient concurrent-write failures and enforce declared cascades."""
+        cursor = connection.cursor()
+        cursor.execute("PRAGMA busy_timeout = 30000")
+        cursor.execute("PRAGMA foreign_keys = ON")
+        cursor.close()
 
 
 def utcnow() -> datetime:
@@ -134,7 +145,19 @@ def get_db():
 
 
 def serialize_item(item: WatchItem) -> ItemOutput:
-    return ItemOutput.model_validate(item)
+    output = ItemOutput.model_validate(item)
+    return output.model_copy(update={
+        "last_checked_at": as_utc(output.last_checked_at),
+        "created_at": as_utc(output.created_at),
+        "updated_at": as_utc(output.updated_at),
+    })
+
+
+def as_utc(value: datetime | None) -> datetime | None:
+    """SQLite returns timezone-naive values even for DateTime(timezone=True)."""
+    if value is None or value.tzinfo is not None:
+        return value
+    return value.replace(tzinfo=timezone.utc)
 
 
 def require_basic_auth(request: Request) -> None:
@@ -159,11 +182,17 @@ def parse_price(value: str | int | float | None) -> Decimal | None:
     cleaned = re.sub(r"[^0-9.,]", "", str(value))
     if not cleaned:
         return None
-    # SerpAPI's extracted_price is preferred; this also covers ordinary 1,299.99 prices.
-    if cleaned.count(",") == 1 and cleaned.count(".") == 0 and len(cleaned.rsplit(",", 1)[1]) == 2:
-        cleaned = cleaned.replace(",", ".")
-    else:
-        cleaned = cleaned.replace(",", "")
+    # Treat the final punctuation mark as the decimal separator when it has
+    # two fractional digits. This supports both 1,299.99 and 1.299,99.
+    separators = [index for index, char in enumerate(cleaned) if char in ".,"]
+    if separators:
+        decimal_index = separators[-1]
+        fractional_digits = len(cleaned) - decimal_index - 1
+        if fractional_digits == 2:
+            integer_part = re.sub(r"[.,]", "", cleaned[:decimal_index])
+            cleaned = f"{integer_part}.{cleaned[decimal_index + 1:]}"
+        else:
+            cleaned = re.sub(r"[.,]", "", cleaned)
     try:
         return Decimal(cleaned).quantize(Decimal("0.01"))
     except InvalidOperation:
@@ -177,14 +206,27 @@ async def search_serpapi(item: WatchItem) -> list[SearchResult]:
         "engine": "google_shopping",
         "q": f"{item.name} available in {item.region}",
         "location": item.region,
-        "gl": item.region[-2:].lower() if len(item.region) == 2 else "us",
         "hl": "en",
         "currency": item.currency,
         "api_key": SERPAPI_API_KEY,
     }
+    # A two-letter region is an ISO country code and can safely target Google.
+    # Named countries/cities must not silently become US searches.
+    if len(item.region) == 2 and item.region.isalpha():
+        params["gl"] = item.region.lower()
     async with httpx.AsyncClient(timeout=httpx.Timeout(25.0), follow_redirects=True) as client:
         response = await client.get("https://serpapi.com/search.json", params=params)
-        response.raise_for_status()
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError:
+            # HTTPX includes the full request URL in this exception. SerpAPI
+            # uses a query-string credential, so do not let it reach logs.
+            try:
+                provider_error = response.json().get("error")
+            except (ValueError, AttributeError):
+                provider_error = None
+            detail = str(provider_error or "Request rejected by the search provider")[:500]
+            raise RuntimeError(f"Search provider returned HTTP {response.status_code}: {detail}") from None
         payload = response.json()
     if payload.get("error"):
         raise RuntimeError(f"Search provider error: {payload['error']}")
@@ -192,7 +234,8 @@ async def search_serpapi(item: WatchItem) -> list[SearchResult]:
     for row in payload.get("shopping_results", []):
         price = parse_price(row.get("extracted_price") or row.get("price"))
         link = row.get("product_link") or row.get("link")
-        if price is None or not link:
+        parsed_link = urlparse(str(link)) if link else None
+        if price is None or not parsed_link or parsed_link.scheme not in {"http", "https"} or not parsed_link.netloc:
             continue
         results.append(SearchResult(
             title=str(row.get("title") or item.name)[:500], retailer=str(row.get("source") or "Unknown retailer")[:240],
@@ -224,7 +267,7 @@ async def check_item(item_id: int) -> dict:
                 best = eligible[0]
                 if item.last_notified_price != best.price:
                     try:
-                        send_notification(item, best)
+                        await asyncio.to_thread(send_notification, item, best)
                         item.last_notified_price = best.price
                     except NotificationError as exc:
                         item.last_status = "notify_error"
@@ -322,13 +365,14 @@ async def update_item(item_id: int, payload: ItemInput, db: Session = Depends(ge
     return serialize_item(item)
 
 
-@app.delete("/api/items/{item_id}", status_code=204)
-def delete_item(item_id: int, db: Session = Depends(get_db)) -> None:
+@app.delete("/api/items/{item_id}", status_code=status.HTTP_204_NO_CONTENT, response_class=Response)
+def delete_item(item_id: int, db: Session = Depends(get_db)) -> Response:
     item = db.get(WatchItem, item_id)
     if not item:
         raise HTTPException(404, "Watch item not found")
     db.delete(item)
     db.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @app.post("/api/items/{item_id}/check")
@@ -344,7 +388,7 @@ def price_history(item_id: int, db: Session = Depends(get_db)) -> list[dict]:
         raise HTTPException(404, "Watch item not found")
     rows = db.scalars(select(PriceHistory).where(PriceHistory.item_id == item_id).order_by(PriceHistory.found_at.desc()).limit(100))
     return [{"title": row.title, "retailer": row.retailer, "price": str(row.price), "currency": row.currency,
-             "deal_url": row.deal_url, "found_at": row.found_at} for row in rows]
+             "deal_url": row.deal_url, "found_at": as_utc(row.found_at)} for row in rows]
 
 
 @app.exception_handler(HTTPException)

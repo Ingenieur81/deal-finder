@@ -36,9 +36,9 @@ def _send_email(target: str, subject: str, body: str) -> None:
     message["To"] = target
     message["Subject"] = subject
     message.set_content(body)
-    port = int(os.getenv("SMTP_PORT", "587"))
-    username, password = os.getenv("SMTP_USERNAME"), os.getenv("SMTP_PASSWORD")
     try:
+        port = int(os.getenv("SMTP_PORT", "587"))
+        username, password = os.getenv("SMTP_USERNAME"), os.getenv("SMTP_PASSWORD")
         with smtplib.SMTP(host, port, timeout=20) as server:
             server.ehlo()
             if os.getenv("SMTP_STARTTLS", "true").lower() == "true":
@@ -47,7 +47,7 @@ def _send_email(target: str, subject: str, body: str) -> None:
             if username and password:
                 server.login(username, password)
             server.send_message(message)
-    except OSError as exc:
+    except (OSError, ValueError, smtplib.SMTPException) as exc:
         raise NotificationError(f"Email delivery failed: {exc}") from exc
 
 
