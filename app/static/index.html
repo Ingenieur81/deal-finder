@@ -11,10 +11,10 @@
       <form id="item-form">
         <input id="item-id" type="hidden">
         <label>Item name<input id="name" required minlength="2" placeholder="Gaming Laptop"></label>
-        <label>Location / region<input id="region" required placeholder="United States"></label>
+        <label>Country<select id="region" required></select></label>
         <label>Minimum price <span class="muted">optional</span><input id="min_price" type="number" min="0" step="0.01" placeholder="800"></label>
         <label>Maximum price <span class="muted">optional</span><input id="max_price" type="number" min="0" step="0.01" placeholder="1200"></label>
-        <label>Currency<input id="currency" required maxlength="8" value="USD" placeholder="USD"></label>
+        <label>Currency<select id="currency" required></select></label>
         <label>Notify via<select id="notification_method"><option value="email">Email</option><option value="android">Android push (FCM)</option></select></label>
         <label id="target-label">Email address<input id="notification_target" required type="email" placeholder="you@example.com"></label>
         <label class="switch"><input id="enabled" type="checkbox" checked><span>Enable monitoring</span></label>
@@ -22,7 +22,7 @@
       </form>
     </section>
     <section class="card"><div class="section-title"><h2>Watchlist</h2><button id="refresh" class="secondary">Refresh</button></div>
-      <div class="table-wrap"><table><thead><tr><th>Item</th><th>Target price</th><th>Region</th><th>Notify</th><th>Status</th><th>Last check</th><th>Actions</th></tr></thead><tbody id="items"></tbody></table></div>
+      <div class="table-wrap"><table><thead><tr><th>Item</th><th>Target / lowest price</th><th>Country</th><th>Notify</th><th>Status</th><th>Last check</th><th>Actions</th></tr></thead><tbody id="items"></tbody></table></div>
     </section>
     <p id="notice" role="status"></p>
   </main>

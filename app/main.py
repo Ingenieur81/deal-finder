@@ -18,7 +18,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import DateTime, ForeignKey, Integer, Numeric, String, Text, create_engine, event, select
+from sqlalchemy import DateTime, ForeignKey, Integer, Numeric, String, Text, create_engine, event, inspect, select, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, relationship, sessionmaker
 
 from .notifications import NotificationError, send_notification
@@ -31,6 +31,18 @@ DATABASE_URL = os.getenv("DATABASE_URL", f"sqlite:///{DATA_DIR / 'deal-finder.db
 SEARCH_INTERVAL_MINUTES = max(5, int(os.getenv("SEARCH_INTERVAL_MINUTES", "60")))
 SERPAPI_API_KEY = os.getenv("SERPAPI_API_KEY", "")
 STATIC_DIR = Path(__file__).parent / "static"
+
+COUNTRIES = {
+    "AU": "Australia", "AT": "Austria", "BE": "Belgium", "BR": "Brazil", "CA": "Canada", "CZ": "Czechia",
+    "DK": "Denmark", "FI": "Finland", "FR": "France", "DE": "Germany", "GR": "Greece", "HK": "Hong Kong",
+    "HU": "Hungary", "IN": "India", "ID": "Indonesia", "IE": "Ireland", "IL": "Israel", "IT": "Italy",
+    "JP": "Japan", "MY": "Malaysia", "MX": "Mexico", "NL": "The Netherlands", "NZ": "New Zealand", "NO": "Norway",
+    "PH": "Philippines", "PL": "Poland", "PT": "Portugal", "RO": "Romania", "SG": "Singapore", "SK": "Slovakia",
+    "ZA": "South Africa", "KR": "South Korea", "ES": "Spain", "SE": "Sweden", "CH": "Switzerland", "TW": "Taiwan",
+    "TH": "Thailand", "TR": "Turkey", "AE": "United Arab Emirates", "GB": "United Kingdom", "US": "United States",
+}
+CURRENCIES = ("EUR", "USD", "GBP", "AUD", "BRL", "CAD", "CHF", "CZK", "DKK", "HKD", "HUF", "IDR", "ILS", "INR", "JPY", "KRW", "MXN", "MYR", "NOK", "NZD", "PHP", "PLN", "RON", "SEK", "SGD", "THB", "TRY", "TWD", "ZAR")
+COUNTRY_ALIASES = {name.upper(): code for code, name in COUNTRIES.items()} | {"NETHERLANDS": "NL", "THE NETHERLANDS": "NL", "UNITED STATES OF AMERICA": "US"}
 
 SQLITE_DATABASE = DATABASE_URL.startswith("sqlite")
 engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False, "timeout": 30} if SQLITE_DATABASE else {})
@@ -70,6 +82,9 @@ class WatchItem(Base):
     last_status: Mapped[str] = mapped_column(String(24), nullable=False, default="never")
     last_error: Mapped[str | None] = mapped_column(Text)
     last_notified_price: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
+    current_price: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
+    current_deal_url: Mapped[str | None] = mapped_column(Text)
+    current_retailer: Mapped[str | None] = mapped_column(String(240))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
     prices: Mapped[list["PriceHistory"]] = relationship(back_populates="item", cascade="all, delete-orphan")
@@ -92,8 +107,8 @@ class ItemInput(BaseModel):
     name: str = Field(min_length=2, max_length=240)
     min_price: Decimal | None = Field(default=None, ge=0)
     max_price: Decimal | None = Field(default=None, ge=0)
-    region: str = Field(min_length=2, max_length=160)
-    currency: str = Field(default="USD", min_length=3, max_length=8)
+    region: str = "NL"
+    currency: str = "EUR"
     notification_method: Literal["email", "android"]
     notification_target: str = Field(min_length=3, max_length=320)
     enabled: bool = True
@@ -109,7 +124,19 @@ class ItemInput(BaseModel):
     @field_validator("currency")
     @classmethod
     def normalize_currency(cls, value: str) -> str:
-        return value.strip().upper()
+        value = value.strip().upper()
+        if value not in CURRENCIES:
+            raise ValueError("Select a supported currency.")
+        return value
+
+    @field_validator("region")
+    @classmethod
+    def normalize_country(cls, value: str) -> str:
+        value = value.strip().upper()
+        value = COUNTRY_ALIASES.get(value, value)
+        if value not in COUNTRIES:
+            raise ValueError("Select a supported country.")
+        return value
 
     def validate_price_range(self) -> None:
         if self.min_price is not None and self.max_price is not None and self.min_price > self.max_price:
@@ -122,6 +149,9 @@ class ItemOutput(ItemInput):
     last_status: str
     last_error: str | None
     last_notified_price: Decimal | None
+    current_price: Decimal | None
+    current_deal_url: str | None
+    current_retailer: str | None
     created_at: datetime
     updated_at: datetime
 
@@ -158,6 +188,23 @@ def as_utc(value: datetime | None) -> datetime | None:
     if value is None or value.tzinfo is not None:
         return value
     return value.replace(tzinfo=timezone.utc)
+
+
+def ensure_database_schema() -> None:
+    """Create new databases and add display fields to installations upgraded in place."""
+    Base.metadata.create_all(engine)
+    existing = {column["name"] for column in inspect(engine).get_columns("watch_items")}
+    additions = {
+        "current_price": "NUMERIC(12, 2)",
+        "current_deal_url": "TEXT",
+        "current_retailer": "VARCHAR(240)",
+    }
+    with engine.begin() as connection:
+        for name, definition in additions.items():
+            if name not in existing:
+                connection.execute(text(f"ALTER TABLE watch_items ADD COLUMN {name} {definition}"))
+        for name, code in COUNTRY_ALIASES.items():
+            connection.execute(text("UPDATE watch_items SET region = :code WHERE upper(region) = :name"), {"code": code, "name": name})
 
 
 def require_basic_auth(request: Request) -> None:
@@ -202,18 +249,15 @@ def parse_price(value: str | int | float | None) -> Decimal | None:
 async def search_serpapi(item: WatchItem) -> list[SearchResult]:
     if not SERPAPI_API_KEY:
         raise RuntimeError("SERPAPI_API_KEY is not configured")
+    country_name = COUNTRIES[item.region]
     params = {
         "engine": "google_shopping",
-        "q": f"{item.name} available in {item.region}",
-        "location": item.region,
+        "q": f"{item.name} available in {country_name}",
         "hl": "en",
         "currency": item.currency,
         "api_key": SERPAPI_API_KEY,
     }
-    # A two-letter region is an ISO country code and can safely target Google.
-    # Named countries/cities must not silently become US searches.
-    if len(item.region) == 2 and item.region.isalpha():
-        params["gl"] = item.region.lower()
+    params["gl"] = item.region.lower()
     async with httpx.AsyncClient(timeout=httpx.Timeout(25.0), follow_redirects=True) as client:
         response = await client.get("https://serpapi.com/search.json", params=params)
         try:
@@ -241,7 +285,7 @@ async def search_serpapi(item: WatchItem) -> list[SearchResult]:
             title=str(row.get("title") or item.name)[:500], retailer=str(row.get("source") or "Unknown retailer")[:240],
             price=price, currency=item.currency, deal_url=str(link),
         ))
-    return results
+    return sorted(results, key=lambda offer: offer.price)[:1]
 
 
 def is_eligible(item: WatchItem, offer: SearchResult) -> bool:
@@ -255,6 +299,7 @@ async def check_item(item_id: int) -> dict:
         if not item or not item.enabled:
             return {"status": "skipped"}
         try:
+            previous_price = db.scalar(select(PriceHistory.price).where(PriceHistory.item_id == item.id).order_by(PriceHistory.found_at.desc(), PriceHistory.id.desc()).limit(1))
             offers = await search_serpapi(item)
             for offer in offers:
                 db.add(PriceHistory(item_id=item.id, title=offer.title, retailer=offer.retailer, price=offer.price,
@@ -263,9 +308,14 @@ async def check_item(item_id: int) -> dict:
             item.last_checked_at = utcnow()
             item.last_status = "matched" if eligible else "ok"
             item.last_error = None
+            if offers:
+                best = offers[0]
+                item.current_price = best.price
+                item.current_deal_url = best.deal_url
+                item.current_retailer = best.retailer
             if eligible:
                 best = eligible[0]
-                if item.last_notified_price != best.price:
+                if previous_price is not None and best.price < previous_price:
                     try:
                         await asyncio.to_thread(send_notification, item, best)
                         item.last_notified_price = best.price
@@ -296,7 +346,7 @@ async def run_all_checks() -> None:
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    Base.metadata.create_all(engine)
+    ensure_database_schema()
     scheduler.add_job(run_all_checks, "interval", minutes=SEARCH_INTERVAL_MINUTES, id="price_checks", replace_existing=True)
     scheduler.start()
     logger.info("Deal Finder started; checks run every %s minutes", SEARCH_INTERVAL_MINUTES)
@@ -338,6 +388,11 @@ def static_file(filename: str) -> FileResponse:
 @app.get("/api/items", response_model=list[ItemOutput])
 def list_items(db: Session = Depends(get_db)) -> list[ItemOutput]:
     return [serialize_item(item) for item in db.scalars(select(WatchItem).order_by(WatchItem.created_at.desc()))]
+
+
+@app.get("/api/options")
+def options() -> dict:
+    return {"countries": [{"code": code, "name": name} for code, name in COUNTRIES.items()], "currencies": list(CURRENCIES)}
 
 
 @app.post("/api/items", response_model=ItemOutput, status_code=201)

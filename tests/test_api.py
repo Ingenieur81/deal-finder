@@ -9,6 +9,14 @@ def test_health_is_public_and_returns_utc_timestamp(client):
     assert response.json()["time"].endswith("+00:00")
 
 
+def test_options_returns_country_and_currency_catalog_with_netherlands_default_available(client, auth_headers):
+    response = client.get("/api/options", headers=auth_headers)
+
+    assert response.status_code == 200
+    assert {"code": "NL", "name": "The Netherlands"} in response.json()["countries"]
+    assert "EUR" in response.json()["currencies"]
+
+
 def test_ui_requires_basic_authentication(client):
     response = client.get("/")
 
@@ -39,6 +47,7 @@ def test_create_list_update_and_delete_item_api(client, auth_headers, item_paylo
     assert created.status_code == 201
     item_id = created.json()["id"]
     assert created.json()["name"] == "Gaming Laptop"
+    assert created.json()["current_price"] is None
     assert client.get("/api/items", headers=auth_headers).json()[0]["id"] == item_id
 
     scheduled = []
@@ -70,6 +79,16 @@ def test_create_item_rejects_invalid_price_range(client, auth_headers, item_payl
 
     assert response.status_code == 422
     assert response.json()["detail"] == "Minimum price must not exceed maximum price."
+
+
+def test_create_item_rejects_unsupported_country_and_currency(client, auth_headers, item_payload):
+    item_payload.update(region="Amsterdam", currency="XYZ")
+
+    response = client.post("/api/items", headers=auth_headers, json=item_payload)
+
+    assert response.status_code == 422
+    assert "supported country" in response.text
+    assert "supported currency" in response.text
 
 
 def test_item_endpoints_return_not_found_for_unknown_item(client, auth_headers, item_payload):

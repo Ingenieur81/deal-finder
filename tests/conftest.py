@@ -21,7 +21,7 @@ def main_module(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         main.scheduler.shutdown(wait=False)
     main = importlib.reload(main)
     main.DATA_DIR.mkdir(parents=True, exist_ok=True)
-    main.Base.metadata.create_all(main.engine)
+    main.ensure_database_schema()
     yield main
     if main.scheduler.running:
         main.scheduler.shutdown(wait=False)

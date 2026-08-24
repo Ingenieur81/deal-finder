@@ -14,7 +14,7 @@ Browser ──HTTP Basic Auth──> FastAPI UI/API ──> SQLite (/data/deal-f
                          history       SMTP / Firebase Cloud Messaging
 ```
 
-Searches include the configured location in the query and send it to SerpAPI as the search location. Results are recorded in price history. A notification is sent for the lowest matching offer when its price differs from the last alerted price. Updating an item automatically starts a new check.
+Searches use a country selected from the built-in catalog. Each check stores only the lowest available offer in price history and shows it beside the target price. A notification is sent only when a newly found, target-matching price is strictly lower than the previous recorded price. Updating an item automatically starts a new check.
 
 ## Project structure
 
@@ -38,16 +38,16 @@ deal-finder/
 2. In that directory, copy `.env.example` to `.env`; set a strong `APP_PASSWORD` and your `SERPAPI_API_KEY`. Keep `.env` private.
 3. Configure at least one notification method below. Email can remain unconfigured if you initially use only Android notifications, and vice versa.
 4. In Container Manager, open **Project** → **Create**, select the folder, choose **Build new image**, and select `docker-compose.yml`. Start the project. Container Manager builds the official multi-architecture Python image for the NAS CPU (ARM64 or x86_64).
-5. Open `http://NAS-IP:8080`. Sign in with `APP_USERNAME` and `APP_PASSWORD` from `.env`.
-6. Add a watch: **Gaming Laptop**, `800`–`1200`, **United States**, `USD`, then an email destination. Select **Check now** to test.
+5. Open `http://NAS-IP:8321`. Sign in with `APP_USERNAME` and `APP_PASSWORD` from `.env`.
+6. Add a watch: **Gaming Laptop**, `800`–`1200`, **The Netherlands**, `EUR`, then an email destination. Select **Check now** to establish the initial reference price; a later lower price triggers the alert.
 
-For a reverse proxy, create a Synology reverse-proxy rule to port 8080 and terminate HTTPS there. Do not expose plain HTTP or port 8080 directly to the internet. The service runs as an unprivileged user and has `no-new-privileges` enabled.
+For a reverse proxy, create a Synology reverse-proxy rule to port 8321 and terminate HTTPS there. Do not expose plain HTTP or port 8321 directly to the internet. The service runs as an unprivileged user and has `no-new-privileges` enabled.
 
 ## Configuration guide
 
 ### Search provider
 
-This application deliberately uses the supported SerpAPI Google Shopping endpoint rather than scraping retailer pages. It is substantially more reliable for a scheduled NAS job and avoids parsing browser markup. Create a SerpAPI account/key, place it in `SERPAPI_API_KEY`, and choose an interval that fits its plan. The location field accepts a country, state/province, or city; use a specific supported region name when possible. `gl` defaults to US unless the entered region is a two-letter country code.
+This application deliberately uses the supported SerpAPI Google Shopping endpoint rather than scraping retailer pages. It is substantially more reliable for a scheduled NAS job and avoids parsing browser markup. Create a SerpAPI account/key, place it in `SERPAPI_API_KEY`, and choose an interval that fits its plan. The form provides the supported country catalog directly and defaults to **The Netherlands**; currencies are also selected from an ISO-currency dropdown and default to **EUR**.
 
 ### Email
 

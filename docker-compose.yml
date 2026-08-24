@@ -7,7 +7,7 @@ services:
     env_file:
       - ${ENV_FILE:-.env}
     ports:
-      - "8080:8080"
+      - "8321:8080"
     volumes:
       - ./data:/data
       # Uncomment after creating firebase-service-account.json in this folder.

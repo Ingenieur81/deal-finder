@@ -56,17 +56,35 @@ def test_search_serpapi_parses_offers_filters_unsafe_links_and_targets_iso_regio
     offers = asyncio.run(main_module.search_serpapi(make_item(main_module, region="NL")))
 
     assert captured["params"]["gl"] == "nl"
+    assert "location" not in captured["params"]
+    assert "The Netherlands" in captured["params"]["q"]
     assert len(offers) == 1
     assert offers[0].price == Decimal("1299.99")
     assert offers[0].deal_url == "https://shop.example/deal"
 
 
-def test_search_serpapi_does_not_force_named_country_to_us(main_module, monkeypatch):
+def test_search_serpapi_returns_only_the_lowest_valid_offer(main_module, monkeypatch):
+    captured = {}
+    payload = {"shopping_results": [
+        {"title": "Expensive", "source": "Shop A", "extracted_price": "€99,99", "link": "https://a.example/deal"},
+        {"title": "Lowest", "source": "Shop B", "extracted_price": "€49,99", "link": "https://b.example/deal"},
+    ]}
+    monkeypatch.setattr(main_module.httpx, "AsyncClient", lambda **_: FakeAsyncClient(FakeResponse(payload), captured))
+
+    offers = asyncio.run(main_module.search_serpapi(make_item(main_module)))
+
+    assert [offer.price for offer in offers] == [Decimal("49.99")]
+    assert offers[0].retailer == "Shop B"
+
+
+def test_search_serpapi_sends_normalized_country_code(main_module, monkeypatch, item_payload):
     captured = {}
     monkeypatch.setattr(main_module.httpx, "AsyncClient", lambda **_: FakeAsyncClient(FakeResponse({"shopping_results": []}), captured))
+    item_payload["region"] = "The Netherlands"
+    normalized_region = main_module.ItemInput(**item_payload).region
 
-    assert asyncio.run(main_module.search_serpapi(make_item(main_module, region="Netherlands"))) == []
-    assert "gl" not in captured["params"]
+    assert asyncio.run(main_module.search_serpapi(make_item(main_module, region=normalized_region))) == []
+    assert captured["params"]["gl"] == "nl"
 
 
 def test_search_serpapi_rejects_missing_api_key(main_module, monkeypatch):
@@ -109,6 +127,8 @@ def test_check_item_persists_offers_and_notifies_changed_best_price(main_module,
         db.add(item)
         db.commit()
         item_id = item.id
+        db.add(main_module.PriceHistory(item_id=item_id, title="Backpack", retailer="Old Shop", price=Decimal("20"), currency="EUR", deal_url="https://old.example/deal"))
+        db.commit()
 
     offer = main_module.SearchResult(title="Backpack", retailer="Shop", price=Decimal("15"), currency="EUR", deal_url="https://shop.example/deal")
     notified = []
@@ -131,7 +151,7 @@ def test_check_item_persists_offers_and_notifies_changed_best_price(main_module,
         history = list(db.scalars(main_module.select(main_module.PriceHistory)))
     assert result == {"status": "matched", "offers": 1, "eligible": 1}
     assert saved.last_notified_price == Decimal("15.00")
-    assert len(history) == 1
+    assert len(history) == 2
     assert len(notified) == 1
 
 
@@ -141,6 +161,8 @@ def test_check_item_records_notification_failure_without_losing_search(main_modu
         db.add(item)
         db.commit()
         item_id = item.id
+        db.add(main_module.PriceHistory(item_id=item_id, title="Backpack", retailer="Old Shop", price=Decimal("20"), currency="EUR", deal_url="https://old.example/deal"))
+        db.commit()
 
     offer = main_module.SearchResult(title="Backpack", retailer="Shop", price=Decimal("15"), currency="EUR", deal_url="https://shop.example/deal")
 
@@ -192,6 +214,27 @@ def test_check_item_marks_successful_search_without_matches_as_ok(main_module, m
     monkeypatch.setattr(main_module, "search_serpapi", search)
 
     assert asyncio.run(main_module.check_item(item_id)) == {"status": "ok", "offers": 1, "eligible": 0}
+    with main_module.SessionLocal() as db:
+        assert db.get(main_module.WatchItem, item_id).current_price == Decimal("50.00")
+
+
+def test_check_item_does_not_notify_for_first_observed_price(main_module, monkeypatch):
+    with main_module.SessionLocal() as db:
+        item = make_item(main_module)
+        db.add(item)
+        db.commit()
+        item_id = item.id
+
+    async def search(_):
+        return [main_module.SearchResult(title="Backpack", retailer="Shop", price=Decimal("15"), currency="EUR", deal_url="https://shop.example/deal")]
+
+    async def unexpected_notification(*_):
+        raise AssertionError("First observed price must not notify")
+
+    monkeypatch.setattr(main_module, "search_serpapi", search)
+    monkeypatch.setattr(main_module.asyncio, "to_thread", unexpected_notification)
+
+    assert asyncio.run(main_module.check_item(item_id)) == {"status": "matched", "offers": 1, "eligible": 1}
 
 
 def test_run_all_checks_processes_each_enabled_item_once(main_module, monkeypatch):

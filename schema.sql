@@ -13,6 +13,9 @@ CREATE TABLE watch_items (
   last_status VARCHAR(24) NOT NULL DEFAULT 'never',
   last_error TEXT,
   last_notified_price DECIMAL(12,2),
+  current_price DECIMAL(12,2),
+  current_deal_url TEXT,
+  current_retailer VARCHAR(240),
   created_at TIMESTAMP NOT NULL,
   updated_at TIMESTAMP NOT NULL
 );
