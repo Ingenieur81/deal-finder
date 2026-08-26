@@ -7,7 +7,7 @@ A low-footprint self-hosted price watchlist. It runs a FastAPI web interface, AP
 ```text
 Browser ──HTTP Basic Auth──> FastAPI UI/API ──> SQLite (/data/deal-finder.db)
                                   │
-                      APScheduler (every N minutes)
+                 APScheduler (09:00 and 17:00 local time)
                                   │
                     SerpAPI Google Shopping search
                            │              │
@@ -47,7 +47,7 @@ For a reverse proxy, create a Synology reverse-proxy rule to port 8321 and termi
 
 ### Search provider
 
-This application deliberately uses the supported SerpAPI Google Shopping endpoint rather than scraping retailer pages. It is substantially more reliable for a scheduled NAS job and avoids parsing browser markup. Create a SerpAPI account/key, place it in `SERPAPI_API_KEY`, and choose an interval that fits its plan. The form provides the supported country catalog directly and defaults to **The Netherlands**; currencies are also selected from an ISO-currency dropdown and default to **EUR**.
+This application deliberately uses the supported SerpAPI Google Shopping endpoint rather than scraping retailer pages. It is substantially more reliable for a scheduled NAS job and avoids parsing browser markup. Create a SerpAPI account/key and place it in `SERPAPI_API_KEY`. Checks run daily at **09:00** and **17:00** in `SCHEDULER_TIMEZONE` (default: `Europe/Amsterdam`). The form provides the supported country catalog directly and defaults to **The Netherlands**; currencies are also selected from an ISO-currency dropdown and default to **EUR**.
 
 ### Email
 

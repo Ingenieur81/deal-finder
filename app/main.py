@@ -28,7 +28,7 @@ logger = logging.getLogger("deal-finder")
 
 DATA_DIR = Path(os.getenv("DATA_DIR", "/data"))
 DATABASE_URL = os.getenv("DATABASE_URL", f"sqlite:///{DATA_DIR / 'deal-finder.db'}")
-SEARCH_INTERVAL_MINUTES = max(5, int(os.getenv("SEARCH_INTERVAL_MINUTES", "60")))
+SCHEDULER_TIMEZONE = os.getenv("SCHEDULER_TIMEZONE", "Europe/Amsterdam")
 SERPAPI_API_KEY = os.getenv("SERPAPI_API_KEY", "")
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -47,7 +47,7 @@ COUNTRY_ALIASES = {name.upper(): code for code, name in COUNTRIES.items()} | {"N
 SQLITE_DATABASE = DATABASE_URL.startswith("sqlite")
 engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False, "timeout": 30} if SQLITE_DATABASE else {})
 SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
-scheduler = AsyncIOScheduler(timezone="UTC")
+scheduler = AsyncIOScheduler(timezone=SCHEDULER_TIMEZONE)
 
 if SQLITE_DATABASE:
     @event.listens_for(engine, "connect")
@@ -356,9 +356,9 @@ async def run_all_checks() -> None:
 async def lifespan(_: FastAPI):
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     ensure_database_schema()
-    scheduler.add_job(run_all_checks, "interval", minutes=SEARCH_INTERVAL_MINUTES, id="price_checks", replace_existing=True)
+    scheduler.add_job(run_all_checks, "cron", hour="9,17", minute=0, id="price_checks", replace_existing=True)
     scheduler.start()
-    logger.info("Deal Finder started; checks run every %s minutes", SEARCH_INTERVAL_MINUTES)
+    logger.info("Deal Finder started; checks run at 09:00 and 17:00 (%s)", SCHEDULER_TIMEZONE)
     yield
     scheduler.shutdown(wait=False)
 

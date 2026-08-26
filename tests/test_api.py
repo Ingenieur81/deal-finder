@@ -9,6 +9,14 @@ def test_health_is_public_and_returns_utc_timestamp(client):
     assert response.json()["time"].endswith("+00:00")
 
 
+def test_scheduler_runs_at_nine_and_seventeen_amsterdam_time(client, main_module):
+    job = main_module.scheduler.get_job("price_checks")
+
+    assert "hour='9,17'" in str(job.trigger)
+    assert "minute='0'" in str(job.trigger)
+    assert str(job.trigger.timezone) == "Europe/Amsterdam"
+
+
 def test_options_returns_country_and_currency_catalog_with_netherlands_default_available(client, auth_headers):
     response = client.get("/api/options", headers=auth_headers)
 

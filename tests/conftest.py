@@ -12,7 +12,7 @@ def main_module(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path / 'test.db'}")
     monkeypatch.setenv("APP_USERNAME", "tester")
     monkeypatch.setenv("APP_PASSWORD", "test-password")
-    monkeypatch.setenv("SEARCH_INTERVAL_MINUTES", "60")
+    monkeypatch.setenv("SCHEDULER_TIMEZONE", "Europe/Amsterdam")
     monkeypatch.setenv("SERPAPI_API_KEY", "test-serp-key")
 
     import app.main as main
