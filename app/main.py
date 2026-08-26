@@ -285,7 +285,7 @@ async def search_serpapi(item: WatchItem) -> list[SearchResult]:
             title=str(row.get("title") or item.name)[:500], retailer=str(row.get("source") or "Unknown retailer")[:240],
             price=price, currency=item.currency, deal_url=str(link),
         ))
-    return sorted(results, key=lambda offer: offer.price)[:1]
+    return sorted((offer for offer in results if is_eligible(item, offer)), key=lambda offer: offer.price)[:1]
 
 
 def is_eligible(item: WatchItem, offer: SearchResult) -> bool:
@@ -299,8 +299,13 @@ async def check_item(item_id: int) -> dict:
         if not item or not item.enabled:
             return {"status": "skipped"}
         try:
-            previous_price = db.scalar(select(PriceHistory.price).where(PriceHistory.item_id == item.id).order_by(PriceHistory.found_at.desc(), PriceHistory.id.desc()).limit(1))
-            offers = await search_serpapi(item)
+            previous_query = select(PriceHistory.price).where(PriceHistory.item_id == item.id)
+            if item.min_price is not None:
+                previous_query = previous_query.where(PriceHistory.price >= item.min_price)
+            if item.max_price is not None:
+                previous_query = previous_query.where(PriceHistory.price <= item.max_price)
+            previous_price = db.scalar(previous_query.order_by(PriceHistory.found_at.desc(), PriceHistory.id.desc()).limit(1))
+            offers = [offer for offer in await search_serpapi(item) if is_eligible(item, offer)]
             for offer in offers:
                 db.add(PriceHistory(item_id=item.id, title=offer.title, retailer=offer.retailer, price=offer.price,
                                     currency=offer.currency, deal_url=offer.deal_url))
@@ -313,6 +318,10 @@ async def check_item(item_id: int) -> dict:
                 item.current_price = best.price
                 item.current_deal_url = best.deal_url
                 item.current_retailer = best.retailer
+            else:
+                item.current_price = None
+                item.current_deal_url = None
+                item.current_retailer = None
             if eligible:
                 best = eligible[0]
                 if previous_price is not None and best.price < previous_price:

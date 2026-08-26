@@ -77,6 +77,20 @@ def test_search_serpapi_returns_only_the_lowest_valid_offer(main_module, monkeyp
     assert offers[0].retailer == "Shop B"
 
 
+def test_search_serpapi_returns_lowest_offer_within_target_range(main_module, monkeypatch):
+    captured = {}
+    payload = {"shopping_results": [
+        {"title": "Below minimum", "source": "Shop A", "extracted_price": "€172,85", "link": "https://a.example/deal"},
+        {"title": "In range", "source": "Shop B", "extracted_price": "€250,00", "link": "https://b.example/deal"},
+        {"title": "Higher", "source": "Shop C", "extracted_price": "€300,00", "link": "https://c.example/deal"},
+    ]}
+    monkeypatch.setattr(main_module.httpx, "AsyncClient", lambda **_: FakeAsyncClient(FakeResponse(payload), captured))
+
+    offers = asyncio.run(main_module.search_serpapi(make_item(main_module, min_price=Decimal("250"), max_price=Decimal("500"))))
+
+    assert [offer.price for offer in offers] == [Decimal("250.00")]
+
+
 def test_search_serpapi_sends_normalized_country_code(main_module, monkeypatch, item_payload):
     captured = {}
     monkeypatch.setattr(main_module.httpx, "AsyncClient", lambda **_: FakeAsyncClient(FakeResponse({"shopping_results": []}), captured))
@@ -213,9 +227,11 @@ def test_check_item_marks_successful_search_without_matches_as_ok(main_module, m
 
     monkeypatch.setattr(main_module, "search_serpapi", search)
 
-    assert asyncio.run(main_module.check_item(item_id)) == {"status": "ok", "offers": 1, "eligible": 0}
+    assert asyncio.run(main_module.check_item(item_id)) == {"status": "ok", "offers": 0, "eligible": 0}
     with main_module.SessionLocal() as db:
-        assert db.get(main_module.WatchItem, item_id).current_price == Decimal("50.00")
+        saved = db.get(main_module.WatchItem, item_id)
+        assert saved.current_price is None
+        assert saved.current_deal_url is None
 
 
 def test_check_item_does_not_notify_for_first_observed_price(main_module, monkeypatch):
