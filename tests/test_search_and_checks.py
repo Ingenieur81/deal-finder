@@ -1,4 +1,5 @@
 import asyncio
+from datetime import timedelta
 from decimal import Decimal
 
 import httpx
@@ -246,6 +247,60 @@ def test_check_item_does_not_notify_for_first_observed_price(main_module, monkey
 
     async def unexpected_notification(*_):
         raise AssertionError("First observed price must not notify")
+
+    monkeypatch.setattr(main_module, "search_serpapi", search)
+    monkeypatch.setattr(main_module.asyncio, "to_thread", unexpected_notification)
+
+    assert asyncio.run(main_module.check_item(item_id)) == {"status": "matched", "offers": 1, "eligible": 1}
+
+
+def test_check_item_notifies_when_an_unchanged_price_is_stale_for_a_week(main_module, monkeypatch):
+    with main_module.SessionLocal() as db:
+        item = make_item(main_module, current_price=Decimal("15"), current_deal_url="https://old.example/deal", current_retailer="Old Shop", current_price_updated_at=main_module.utcnow() - timedelta(days=8))
+        db.add(item)
+        db.commit()
+        item_id = item.id
+        db.add(main_module.PriceHistory(item_id=item_id, title="Backpack", retailer="Old Shop", price=Decimal("15"), currency="EUR", deal_url="https://old.example/deal"))
+        db.commit()
+
+    offer = main_module.SearchResult(title="Backpack", retailer="Shop", price=Decimal("15"), currency="EUR", deal_url="https://shop.example/deal")
+    notifications = []
+
+    async def search(_):
+        return [offer]
+
+    async def run_in_thread(function, *args):
+        notifications.append(args)
+        return function(*args)
+
+    monkeypatch.setattr(main_module, "search_serpapi", search)
+    monkeypatch.setattr(main_module.asyncio, "to_thread", run_in_thread)
+    monkeypatch.setattr(main_module, "send_notification", lambda *_: None)
+
+    result = asyncio.run(main_module.check_item(item_id))
+
+    assert result == {"status": "matched", "offers": 1, "eligible": 1}
+    assert len(notifications) == 1
+    with main_module.SessionLocal() as db:
+        saved = db.get(main_module.WatchItem, item_id)
+        assert saved.last_notified_price == Decimal("15.00")
+        assert main_module.as_utc(saved.current_price_updated_at) > main_module.utcnow() - timedelta(minutes=1)
+
+
+def test_check_item_does_not_notify_for_an_unchanged_recent_price(main_module, monkeypatch):
+    with main_module.SessionLocal() as db:
+        item = make_item(main_module, current_price=Decimal("15"), current_price_updated_at=main_module.utcnow() - timedelta(days=6))
+        db.add(item)
+        db.commit()
+        item_id = item.id
+        db.add(main_module.PriceHistory(item_id=item_id, title="Backpack", retailer="Shop", price=Decimal("15"), currency="EUR", deal_url="https://shop.example/deal"))
+        db.commit()
+
+    async def search(_):
+        return [main_module.SearchResult(title="Backpack", retailer="Shop", price=Decimal("15"), currency="EUR", deal_url="https://shop.example/deal")]
+
+    async def unexpected_notification(*_):
+        raise AssertionError("A recent unchanged price must not notify")
 
     monkeypatch.setattr(main_module, "search_serpapi", search)
     monkeypatch.setattr(main_module.asyncio, "to_thread", unexpected_notification)

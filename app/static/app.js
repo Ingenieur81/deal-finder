@@ -1,6 +1,7 @@
 const $ = (selector) => document.querySelector(selector);
 let currentItems = [];
 let catalog = { countries: [], currencies: [] };
+let historyItem = null;
 
 function text(value) { return value == null || value === '' ? '—' : String(value); }
 function money(item) { const low = item.min_price, high = item.max_price, prefix = item.currency + ' '; return low && high ? `${prefix}${low}–${high}` : low ? `from ${prefix}${low}` : high ? `up to ${prefix}${high}` : 'Any price'; }
@@ -30,8 +31,30 @@ function resetForm() { $('#item-form').reset(); $('#region').value='NL'; $('#cur
 function edit(item) { $('#item-id').value=item.id; ['name','region','min_price','max_price','currency','notification_method','notification_target'].forEach(key => $( '#'+key ).value=item[key] ?? ''); $('#enabled').checked=item.enabled; syncNotificationTarget(); $('#form-title').textContent=`Edit: ${item.name}`; $('#cancel').hidden=false; window.scrollTo({top:0,behavior:'smooth'}); }
 async function check(id) { notice('Searching…'); try { const result=await api(`/api/items/${id}/check`,{method:'POST'}); notice(`Check complete: ${result.eligible || 0} matching offer(s).`); load(); } catch(e) { notice(e.message,true); } }
 async function removeItem(item) { if (!confirm(`Delete "${item.name}" and its price history?`)) return; try { await api(`/api/items/${item.id}`,{method:'DELETE'}); notice('Watch deleted.'); load(); } catch(e) { notice(e.message,true); } }
-async function history(item) { try { const rows=await api(`/api/items/${item.id}/history`); $('#history-title').textContent=`Price history: ${item.name}`; const container=$('#history'); container.replaceChildren(); if(!rows.length) container.textContent='No prices recorded yet.'; rows.forEach(x=>{const d=document.createElement('div');d.className='history-row';const link=document.createElement('a');link.href=x.deal_url;link.target='_blank';link.rel='noopener';link.textContent='Open deal';d.append(`${x.currency} ${x.price} — ${x.retailer} — ${when(x.found_at)} `,link);container.appendChild(d);}); $('#history-dialog').showModal(); } catch(e) { notice(e.message,true); } }
+function drawHistoryChart(rows, currency) {
+  const canvas = $('#history-chart'), bounds = canvas.getBoundingClientRect(), ratio = window.devicePixelRatio || 1;
+  canvas.width = Math.max(1, Math.floor(bounds.width * ratio)); canvas.height = Math.max(1, Math.floor(bounds.height * ratio));
+  const context = canvas.getContext('2d'); context.scale(ratio, ratio);
+  const width = bounds.width, height = bounds.height, padding = { top: 20, right: 18, bottom: 28, left: 58 };
+  context.clearRect(0, 0, width, height); context.font = '12px system-ui';
+  if (!rows.length) { context.fillStyle = '#aab8d0'; context.fillText('No prices recorded in this range.', padding.left, height / 2); return; }
+  const points = [...rows].reverse().map(row => ({ price: Number(row.price), time: new Date(row.found_at).getTime() }));
+  const prices = points.map(point => point.price), lowest = Math.min(...prices), highest = Math.max(...prices);
+  const priceSpan = Math.max(highest - lowest, Math.max(highest * 0.05, 1));
+  const floor = lowest - priceSpan * 0.1, ceiling = highest + priceSpan * 0.1;
+  const times = points.map(point => point.time), start = Math.min(...times), end = Math.max(...times), timeSpan = Math.max(end - start, 86_400_000);
+  const plotWidth = width - padding.left - padding.right, plotHeight = height - padding.top - padding.bottom;
+  const x = point => padding.left + ((point.time - start) / timeSpan) * plotWidth;
+  const y = point => padding.top + ((ceiling - point.price) / (ceiling - floor)) * plotHeight;
+  context.strokeStyle = '#2b3b56'; context.fillStyle = '#aab8d0'; context.textAlign = 'right';
+  [floor, (floor + ceiling) / 2, ceiling].forEach(value => { const lineY = padding.top + ((ceiling - value) / (ceiling - floor)) * plotHeight; context.beginPath(); context.moveTo(padding.left, lineY); context.lineTo(width - padding.right, lineY); context.stroke(); context.fillText(`${currency} ${value.toFixed(2)}`, padding.left - 6, lineY + 4); });
+  context.strokeStyle = '#79dcb4'; context.lineWidth = 2; context.beginPath(); points.forEach((point, index) => index ? context.lineTo(x(point), y(point)) : context.moveTo(x(point), y(point))); context.stroke();
+  context.fillStyle = '#79dcb4'; points.forEach(point => { context.beginPath(); context.arc(x(point), y(point), 3, 0, Math.PI * 2); context.fill(); });
+  context.fillStyle = '#aab8d0'; context.textAlign = 'left'; context.fillText(new Date(start).toLocaleDateString(), padding.left, height - 7); context.textAlign = 'right'; context.fillText(new Date(end).toLocaleDateString(), width - padding.right, height - 7);
+}
+async function loadHistory() { if (!historyItem) return; try { const days=$('#history-range').value, rows=await api(`/api/items/${historyItem.id}/history?days=${days}`); $('#history-summary').textContent=rows.length ? `${rows.length} recorded price${rows.length===1?'':'s'} in the selected range.` : 'No prices recorded in the selected range.'; drawHistoryChart(rows, historyItem.currency); const container=$('#history'); container.replaceChildren(); rows.forEach(x=>{const d=document.createElement('div');d.className='history-row';const link=document.createElement('a');link.href=x.deal_url;link.target='_blank';link.rel='noopener';link.textContent='Open deal';d.append(`${x.currency} ${x.price} — ${x.retailer} — ${when(x.found_at)} `,link);container.appendChild(d);}); } catch(e) { notice(e.message,true); } }
+async function history(item) { historyItem=item; $('#history-title').textContent=`Price history: ${item.name}`; $('#history-range').value='30'; $('#history-dialog').showModal(); await loadHistory(); }
 function populateOptions() { $('#region').replaceChildren(...catalog.countries.map(country => new Option(country.name, country.code))); $('#currency').replaceChildren(...catalog.currencies.map(currency => new Option(currency, currency))); }
 async function initialize() { try { catalog = await api('/api/options'); populateOptions(); resetForm(); await load(); } catch (e) { notice(e.message, true); } }
 $('#notification_method').onchange = syncNotificationTarget;
-$('#cancel').onclick=resetForm; $('#refresh').onclick=load; $('#close-history').onclick=()=>$('#history-dialog').close(); initialize();
+$('#cancel').onclick=resetForm; $('#refresh').onclick=load; $('#close-history').onclick=()=>$('#history-dialog').close(); $('#history-range').onchange=loadHistory; initialize();

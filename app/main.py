@@ -7,7 +7,7 @@ import logging
 import os
 import re
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Literal
@@ -15,7 +15,7 @@ from urllib.parse import urlparse
 
 import httpx
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response, status
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import DateTime, ForeignKey, Integer, Numeric, String, Text, create_engine, event, inspect, select, text
@@ -74,7 +74,7 @@ class WatchItem(Base):
     min_price: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
     max_price: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
     region: Mapped[str] = mapped_column(String(160), nullable=False)
-    currency: Mapped[str] = mapped_column(String(8), nullable=False, default="USD")
+    currency: Mapped[str] = mapped_column(String(8), nullable=False, default="EUR")
     notification_method: Mapped[str] = mapped_column(String(12), nullable=False, default="email")
     notification_target: Mapped[str] = mapped_column(String(320), nullable=False)
     enabled: Mapped[bool] = mapped_column(default=True, nullable=False)
@@ -85,6 +85,7 @@ class WatchItem(Base):
     current_price: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
     current_deal_url: Mapped[str | None] = mapped_column(Text)
     current_retailer: Mapped[str | None] = mapped_column(String(240))
+    current_price_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
     prices: Mapped[list["PriceHistory"]] = relationship(back_populates="item", cascade="all, delete-orphan")
@@ -152,6 +153,7 @@ class ItemOutput(ItemInput):
     current_price: Decimal | None
     current_deal_url: str | None
     current_retailer: str | None
+    current_price_updated_at: datetime | None
     created_at: datetime
     updated_at: datetime
 
@@ -178,6 +180,7 @@ def serialize_item(item: WatchItem) -> ItemOutput:
     output = ItemOutput.model_validate(item)
     return output.model_copy(update={
         "last_checked_at": as_utc(output.last_checked_at),
+        "current_price_updated_at": as_utc(output.current_price_updated_at),
         "created_at": as_utc(output.created_at),
         "updated_at": as_utc(output.updated_at),
     })
@@ -198,6 +201,7 @@ def ensure_database_schema() -> None:
         "current_price": "NUMERIC(12, 2)",
         "current_deal_url": "TEXT",
         "current_retailer": "VARCHAR(240)",
+        "current_price_updated_at": "DATETIME",
     }
     with engine.begin() as connection:
         for name, definition in additions.items():
@@ -310,24 +314,39 @@ async def check_item(item_id: int) -> dict:
                 db.add(PriceHistory(item_id=item.id, title=offer.title, retailer=offer.retailer, price=offer.price,
                                     currency=offer.currency, deal_url=offer.deal_url))
             eligible = sorted((offer for offer in offers if is_eligible(item, offer)), key=lambda offer: offer.price)
-            item.last_checked_at = utcnow()
+            checked_at = utcnow()
+            item.last_checked_at = checked_at
             item.last_status = "matched" if eligible else "ok"
             item.last_error = None
             if offers:
                 best = offers[0]
+                price_changed = item.current_price is not None and item.current_price != best.price
+                has_price_baseline = item.current_price_updated_at is not None
                 item.current_price = best.price
                 item.current_deal_url = best.deal_url
                 item.current_retailer = best.retailer
+                if not has_price_baseline or price_changed:
+                    item.current_price_updated_at = checked_at
             else:
                 item.current_price = None
                 item.current_deal_url = None
                 item.current_retailer = None
             if eligible:
                 best = eligible[0]
-                if previous_price is not None and best.price < previous_price:
+                price_decreased = previous_price is not None and best.price < previous_price
+                price_is_stale = (
+                    previous_price is not None
+                    and item.current_price_updated_at is not None
+                    and not price_changed
+                    and checked_at - as_utc(item.current_price_updated_at) >= timedelta(days=7)
+                )
+                if price_decreased or price_is_stale:
                     try:
                         await asyncio.to_thread(send_notification, item, best)
                         item.last_notified_price = best.price
+                        if price_is_stale:
+                            # Keep retrying a stale-price reminder when delivery fails.
+                            item.current_price_updated_at = checked_at
                     except NotificationError as exc:
                         item.last_status = "notify_error"
                         item.last_error = str(exc)
@@ -447,10 +466,13 @@ async def check_one(item_id: int, db: Session = Depends(get_db)) -> dict:
 
 
 @app.get("/api/items/{item_id}/history")
-def price_history(item_id: int, db: Session = Depends(get_db)) -> list[dict]:
+def price_history(item_id: int, days: int | None = Query(default=30, ge=1, le=3650), db: Session = Depends(get_db)) -> list[dict]:
     if not db.get(WatchItem, item_id):
         raise HTTPException(404, "Watch item not found")
-    rows = db.scalars(select(PriceHistory).where(PriceHistory.item_id == item_id).order_by(PriceHistory.found_at.desc()).limit(100))
+    query = select(PriceHistory).where(PriceHistory.item_id == item_id)
+    if days is not None:
+        query = query.where(PriceHistory.found_at >= utcnow() - timedelta(days=days))
+    rows = db.scalars(query.order_by(PriceHistory.found_at.desc()).limit(100))
     return [{"title": row.title, "retailer": row.retailer, "price": str(row.price), "currency": row.currency,
              "deal_url": row.deal_url, "found_at": as_utc(row.found_at)} for row in rows]
 

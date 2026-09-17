@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import timedelta
 
 
 def test_health_is_public_and_returns_utc_timestamp(client):
@@ -25,6 +25,17 @@ def test_options_returns_country_and_currency_catalog_with_netherlands_default_a
     assert "EUR" in response.json()["currencies"]
 
 
+def test_create_item_defaults_to_netherlands_and_eur(client, auth_headers, item_payload):
+    item_payload.pop("region")
+    item_payload.pop("currency")
+
+    response = client.post("/api/items", headers=auth_headers, json=item_payload)
+
+    assert response.status_code == 201
+    assert response.json()["region"] == "NL"
+    assert response.json()["currency"] == "EUR"
+
+
 def test_ui_requires_basic_authentication(client):
     response = client.get("/")
 
@@ -38,6 +49,8 @@ def test_ui_and_static_assets_are_served_to_authenticated_user(client, auth_head
 
     assert page.status_code == 200
     assert "Deal Finder" in page.text
+    assert 'id="history-chart"' in page.text
+    assert 'value="30"' in page.text
     assert stylesheet.status_code == 200
     assert "--accent" in stylesheet.text
 
@@ -122,7 +135,7 @@ def test_manual_check_returns_check_result(client, auth_headers, item_payload, m
 def test_price_history_returns_recorded_offer_with_utc_timestamp(client, auth_headers, item_payload, main_module):
     item_id = client.post("/api/items", headers=auth_headers, json=item_payload).json()["id"]
     with main_module.SessionLocal() as db:
-        db.add(main_module.PriceHistory(item_id=item_id, title="Laptop", retailer="Shop", price="999.99", currency="USD", deal_url="https://shop.example/deal", found_at=datetime(2026, 1, 1)))
+        db.add(main_module.PriceHistory(item_id=item_id, title="Laptop", retailer="Shop", price="999.99", currency="USD", deal_url="https://shop.example/deal", found_at=main_module.utcnow() - timedelta(days=1)))
         db.commit()
 
     response = client.get(f"/api/items/{item_id}/history", headers=auth_headers)
@@ -130,3 +143,18 @@ def test_price_history_returns_recorded_offer_with_utc_timestamp(client, auth_he
     assert response.status_code == 200
     assert response.json()[0]["price"] == "999.99"
     assert response.json()[0]["found_at"].endswith("Z") or response.json()[0]["found_at"].endswith("+00:00")
+
+
+def test_price_history_defaults_to_the_past_month(client, auth_headers, item_payload, main_module):
+    item_id = client.post("/api/items", headers=auth_headers, json=item_payload).json()["id"]
+    with main_module.SessionLocal() as db:
+        db.add_all([
+            main_module.PriceHistory(item_id=item_id, title="Recent", retailer="Shop", price="900", currency="USD", deal_url="https://shop.example/recent", found_at=main_module.utcnow() - timedelta(days=1)),
+            main_module.PriceHistory(item_id=item_id, title="Old", retailer="Shop", price="800", currency="USD", deal_url="https://shop.example/old", found_at=main_module.utcnow() - timedelta(days=31)),
+        ])
+        db.commit()
+
+    response = client.get(f"/api/items/{item_id}/history", headers=auth_headers)
+
+    assert response.status_code == 200
+    assert [row["title"] for row in response.json()] == ["Recent"]

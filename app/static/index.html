@@ -26,7 +26,7 @@
     </section>
     <p id="notice" role="status"></p>
   </main>
-  <dialog id="history-dialog"><div class="dialog-head"><h2 id="history-title">Price history</h2><button id="close-history" class="secondary">Close</button></div><div id="history"></div></dialog>
+  <dialog id="history-dialog"><div class="dialog-head"><h2 id="history-title">Price history</h2><button id="close-history" class="secondary">Close</button></div><label class="history-range">Range<select id="history-range"><option value="30">Past month</option><option value="90">Past 3 months</option><option value="365">Past year</option></select></label><p id="history-summary" class="muted"></p><div class="chart-wrap"><canvas id="history-chart" role="img" aria-label="Historical price chart"></canvas></div><div id="history"></div></dialog>
   <script src="/static/app.js"></script>
 </body>
 </html>
