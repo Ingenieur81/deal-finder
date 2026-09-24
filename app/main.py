@@ -11,7 +11,7 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Literal
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 import httpx
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -25,6 +25,10 @@ from .notifications import NotificationError, send_notification
 
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO").upper(), format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("deal-finder")
+# SerpAPI credentials are query parameters. HTTPX logs full outbound URLs at
+# INFO, so never allow its request logging into the application log stream.
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 DATA_DIR = Path(os.getenv("DATA_DIR", "/data"))
 DATABASE_URL = os.getenv("DATABASE_URL", f"sqlite:///{DATA_DIR / 'deal-finder.db'}")
@@ -166,7 +170,7 @@ class SearchResult(BaseModel):
     price: Decimal
     currency: str
     deal_url: str | None
-    product_id: str | None = None
+    immersive_page_token: str | None = None
 
 
 def get_db():
@@ -285,12 +289,12 @@ async def search_serpapi(item: WatchItem) -> list[SearchResult]:
         if price is None:
             continue
         direct_url = merchant_url(row.get("direct_link") or row.get("link"))
-        product_id = str(row["product_id"]) if row.get("product_id") else None
-        if direct_url is None and product_id is None:
+        page_token = immersive_page_token(row)
+        if direct_url is None and page_token is None:
             continue
         results.append(SearchResult(
             title=str(row.get("title") or item.name)[:500], retailer=str(row.get("source") or "Unknown retailer")[:240],
-            price=price, currency=item.currency, deal_url=direct_url, product_id=product_id,
+            price=price, currency=item.currency, deal_url=direct_url, immersive_page_token=page_token,
         ))
     eligible = sorted((offer for offer in results if is_eligible(item, offer)), key=lambda offer: offer.price)
     if not eligible:
@@ -298,8 +302,8 @@ async def search_serpapi(item: WatchItem) -> list[SearchResult]:
     best = eligible[0]
     if best.deal_url is None and item.current_price == best.price and item.current_retailer == best.retailer:
         best.deal_url = merchant_url(item.current_deal_url)
-    if best.deal_url is None and best.product_id:
-        best.deal_url = await product_offer_url(item, best)
+    if best.deal_url is None and best.immersive_page_token:
+        best.deal_url = await immersive_offer_url(item, best)
     if best.deal_url is None:
         logger.warning("No direct merchant URL was available for item %s", item.id)
         return []
@@ -316,13 +320,20 @@ def merchant_url(value: object) -> str | None:
     return parsed.geturl()
 
 
-async def product_offer_url(item: WatchItem, offer: SearchResult) -> str | None:
+def immersive_page_token(row: dict) -> str | None:
+    """Read the supported immersive-product token from a Shopping result."""
+    if row.get("immersive_product_page_token"):
+        return str(row["immersive_product_page_token"])
+    api_url = str(row.get("serpapi_immersive_product_api") or "")
+    return parse_qs(urlparse(api_url).query).get("page_token", [None])[0]
+
+
+async def immersive_offer_url(item: WatchItem, offer: SearchResult) -> str | None:
     """Fetch the selected product's matching seller offer to obtain its direct URL."""
     params = {
-        "engine": "google_product",
-        "product_id": offer.product_id,
-        "gl": item.region.lower(),
-        "hl": "en",
+        "engine": "google_immersive_product",
+        "page_token": offer.immersive_page_token,
+        "more_stores": "true",
         "api_key": SERPAPI_API_KEY,
     }
     async with httpx.AsyncClient(timeout=httpx.Timeout(25.0), follow_redirects=True) as client:
@@ -339,11 +350,11 @@ async def product_offer_url(item: WatchItem, offer: SearchResult) -> str | None:
         payload = response.json()
     if payload.get("error"):
         raise RuntimeError(f"Search provider error: {payload['error']}")
-    sellers = payload.get("sellers_results", {}).get("online_sellers", [])
+    sellers = payload.get("product_results", {}).get("stores", [])
     matching_sellers = [
         seller for seller in sellers
         if str(seller.get("name") or "").casefold() == offer.retailer.casefold()
-        and parse_price(seller.get("base_price")) == offer.price
+        and parse_price(seller.get("extracted_price") or seller.get("price") or seller.get("base_price")) == offer.price
     ]
     for seller in matching_sellers:
         direct_url = merchant_url(seller.get("direct_link") or seller.get("link"))

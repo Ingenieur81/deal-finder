@@ -1,3 +1,4 @@
+import logging
 from datetime import datetime, timezone
 from decimal import Decimal
 
@@ -27,6 +28,16 @@ def test_parse_price_returns_none_for_missing_or_non_numeric_values(main_module)
 def test_merchant_url_accepts_direct_merchant_links_and_rejects_google_shopping_links(main_module):
     assert main_module.merchant_url("https://shop.example/products/item") == "https://shop.example/products/item"
     assert main_module.merchant_url("https://www.google.com/search?ibp=oshop&q=item") is None
+
+
+def test_immersive_page_token_reads_the_field_or_serpapi_url(main_module):
+    assert main_module.immersive_page_token({"immersive_product_page_token": "direct-token"}) == "direct-token"
+    assert main_module.immersive_page_token({"serpapi_immersive_product_api": "https://serpapi.com/search.json?engine=google_immersive_product&page_token=url-token"}) == "url-token"
+
+
+def test_http_client_loggers_do_not_emit_credential_bearing_request_urls(main_module):
+    assert logging.getLogger("httpx").getEffectiveLevel() >= logging.WARNING
+    assert logging.getLogger("httpcore").getEffectiveLevel() >= logging.WARNING
 
 
 def test_item_input_trims_fields_and_normalizes_currency(main_module, item_payload):

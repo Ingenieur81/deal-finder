@@ -20,7 +20,7 @@ Do not use `compose.yaml` or `compose.debug.yaml` for normal deployment; they ar
 - A watch stores a two-letter ISO country code in `region`; only entries in `COUNTRIES` are accepted. The UI defaults to **NL / The Netherlands**.
 - Currency must be in `CURRENCIES`; the UI and API default to **EUR**.
 - SerpAPI receives `gl=<country code>` and no `location` parameter. Do not add `location=NL`: SerpAPI rejects it.
-- Search results are parsed defensively and non-HTTP(S) deal links are discarded. Never use SerpAPI's `product_link`: it is a Google Shopping page, not a merchant URL. Prefer a direct offer link; if it is absent, resolve only the selected product with `engine=google_product`, matching retailer and price, and use its `direct_link`. An unchanged retailer/price reuses the stored direct URL to avoid an extra SerpAPI request.
+- Search results are parsed defensively and non-HTTP(S) deal links are discarded. Never use SerpAPI's `product_link`: it is a Google Shopping page, not a merchant URL. Prefer a direct offer link; if it is absent, resolve only the selected product with the supported `engine=google_immersive_product` and its immersive page token, matching retailer and price. An unchanged retailer/price reuses the stored direct URL to avoid an extra SerpAPI request. Do not use the retired `google_product` engine.
 - Only the **lowest offer within the configured min/max target range** is retained. A price below the minimum is intentionally ignored, not displayed as the current lowest price, and not stored as the new comparison baseline.
 - `PriceHistory` records the accepted lowest result from each successful check. `WatchItem.current_price`, `current_deal_url`, and `current_retailer` support the overview display. `current_price_updated_at` changes only when the accepted numeric price changes (or when a successful stale-price reminder is sent).
 - The first accepted price is a baseline. Notify when the new accepted price is **strictly lower** than the previous accepted in-range price. When an accepted price has remained unchanged for seven days, send a reminder notification after a successful re-check and renew its timestamp. If no price is in range, clear the current-lowest display.
@@ -40,6 +40,7 @@ APScheduler uses `SCHEDULER_TIMEZONE`, defaulting to `Europe/Amsterdam`. The onl
 - Copy `.env.example` to `.env`; never commit `.env`, Firebase service-account JSON, or `data/`.
 - `APP_USERNAME` / `APP_PASSWORD` protect the UI and API. `/health` remains public for Docker health checks.
 - `SERPAPI_API_KEY` is passed as a query credential by SerpAPI. Error handling must never log request URLs or otherwise expose it. Rotate any key that appears in logs, issues, or chat.
+- Keep `httpx` and `httpcore` loggers at `WARNING` or above. At `INFO`, HTTPX logs full request URLs and would expose the SerpAPI query credential.
 - SMTP uses STARTTLS by default. FCM requires a mounted service-account JSON and a device registration token per watch.
 
 ## Development and testing
