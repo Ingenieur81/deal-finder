@@ -64,6 +64,67 @@ def test_search_serpapi_parses_offers_filters_unsafe_links_and_targets_iso_regio
     assert offers[0].deal_url == "https://shop.example/deal"
 
 
+def test_search_serpapi_resolves_google_product_link_to_matching_retailer(main_module, monkeypatch):
+    calls = []
+    responses = [
+        FakeResponse({"shopping_results": [{
+            "title": "Ash Tee", "source": "Aeden", "extracted_price": "29.95",
+            "product_id": "12111129819258340978",
+            "product_link": "https://www.google.com/search?ibp=oshop&q=Aeden+Ash+Tee",
+        }]}),
+        FakeResponse({"sellers_results": {"online_sellers": [{
+            "name": "Aeden", "base_price": "€29,95", "direct_link": "https://aeden.nl/products/ash-tee",
+        }]}}),
+    ]
+
+    class ProductClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_):
+            return None
+
+        async def get(self, url, params):
+            calls.append((url, params))
+            return responses.pop(0)
+
+    monkeypatch.setattr(main_module.httpx, "AsyncClient", lambda **_: ProductClient())
+
+    offers = asyncio.run(main_module.search_serpapi(make_item(main_module)))
+
+    assert len(calls) == 2
+    assert calls[1][1]["engine"] == "google_product"
+    assert calls[1][1]["product_id"] == "12111129819258340978"
+    assert offers[0].deal_url == "https://aeden.nl/products/ash-tee"
+
+
+def test_search_serpapi_reuses_stored_direct_url_for_unchanged_retailer_and_price(main_module, monkeypatch):
+    calls = []
+    payload = {"shopping_results": [{
+        "title": "Ash Tee", "source": "Aeden", "extracted_price": "29.95",
+        "product_id": "12111129819258340978", "product_link": "https://www.google.com/shopping/product/12111129819258340978",
+    }]}
+
+    class CachedOfferClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_):
+            return None
+
+        async def get(self, url, params):
+            calls.append((url, params))
+            return FakeResponse(payload)
+
+    item = make_item(main_module, current_price=Decimal("29.95"), current_retailer="Aeden", current_deal_url="https://aeden.nl/products/ash-tee")
+    monkeypatch.setattr(main_module.httpx, "AsyncClient", lambda **_: CachedOfferClient())
+
+    offers = asyncio.run(main_module.search_serpapi(item))
+
+    assert len(calls) == 1
+    assert offers[0].deal_url == "https://aeden.nl/products/ash-tee"
+
+
 def test_search_serpapi_returns_only_the_lowest_valid_offer(main_module, monkeypatch):
     captured = {}
     payload = {"shopping_results": [

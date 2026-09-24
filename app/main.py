@@ -165,7 +165,8 @@ class SearchResult(BaseModel):
     retailer: str
     price: Decimal
     currency: str
-    deal_url: str
+    deal_url: str | None
+    product_id: str | None = None
 
 
 def get_db():
@@ -281,15 +282,74 @@ async def search_serpapi(item: WatchItem) -> list[SearchResult]:
     results: list[SearchResult] = []
     for row in payload.get("shopping_results", []):
         price = parse_price(row.get("extracted_price") or row.get("price"))
-        link = row.get("product_link") or row.get("link")
-        parsed_link = urlparse(str(link)) if link else None
-        if price is None or not parsed_link or parsed_link.scheme not in {"http", "https"} or not parsed_link.netloc:
+        if price is None:
+            continue
+        direct_url = merchant_url(row.get("direct_link") or row.get("link"))
+        product_id = str(row["product_id"]) if row.get("product_id") else None
+        if direct_url is None and product_id is None:
             continue
         results.append(SearchResult(
             title=str(row.get("title") or item.name)[:500], retailer=str(row.get("source") or "Unknown retailer")[:240],
-            price=price, currency=item.currency, deal_url=str(link),
+            price=price, currency=item.currency, deal_url=direct_url, product_id=product_id,
         ))
-    return sorted((offer for offer in results if is_eligible(item, offer)), key=lambda offer: offer.price)[:1]
+    eligible = sorted((offer for offer in results if is_eligible(item, offer)), key=lambda offer: offer.price)
+    if not eligible:
+        return []
+    best = eligible[0]
+    if best.deal_url is None and item.current_price == best.price and item.current_retailer == best.retailer:
+        best.deal_url = merchant_url(item.current_deal_url)
+    if best.deal_url is None and best.product_id:
+        best.deal_url = await product_offer_url(item, best)
+    if best.deal_url is None:
+        logger.warning("No direct merchant URL was available for item %s", item.id)
+        return []
+    return [best]
+
+
+def merchant_url(value: object) -> str | None:
+    """Accept only direct HTTP(S) merchant URLs, never Google Shopping pages."""
+    parsed = urlparse(str(value)) if value else None
+    host = parsed.hostname.lower() if parsed and parsed.hostname else ""
+    is_google = host.startswith("google.") or ".google." in host
+    if not parsed or parsed.scheme not in {"http", "https"} or not host or is_google:
+        return None
+    return parsed.geturl()
+
+
+async def product_offer_url(item: WatchItem, offer: SearchResult) -> str | None:
+    """Fetch the selected product's matching seller offer to obtain its direct URL."""
+    params = {
+        "engine": "google_product",
+        "product_id": offer.product_id,
+        "gl": item.region.lower(),
+        "hl": "en",
+        "api_key": SERPAPI_API_KEY,
+    }
+    async with httpx.AsyncClient(timeout=httpx.Timeout(25.0), follow_redirects=True) as client:
+        response = await client.get("https://serpapi.com/search.json", params=params)
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError:
+            try:
+                provider_error = response.json().get("error")
+            except (ValueError, AttributeError):
+                provider_error = None
+            detail = str(provider_error or "Request rejected by the search provider")[:500]
+            raise RuntimeError(f"Search provider returned HTTP {response.status_code}: {detail}") from None
+        payload = response.json()
+    if payload.get("error"):
+        raise RuntimeError(f"Search provider error: {payload['error']}")
+    sellers = payload.get("sellers_results", {}).get("online_sellers", [])
+    matching_sellers = [
+        seller for seller in sellers
+        if str(seller.get("name") or "").casefold() == offer.retailer.casefold()
+        and parse_price(seller.get("base_price")) == offer.price
+    ]
+    for seller in matching_sellers:
+        direct_url = merchant_url(seller.get("direct_link") or seller.get("link"))
+        if direct_url:
+            return direct_url
+    return None
 
 
 def is_eligible(item: WatchItem, offer: SearchResult) -> bool:

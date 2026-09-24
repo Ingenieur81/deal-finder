@@ -24,6 +24,11 @@ def test_parse_price_returns_none_for_missing_or_non_numeric_values(main_module)
     assert main_module.parse_price("price unavailable") is None
 
 
+def test_merchant_url_accepts_direct_merchant_links_and_rejects_google_shopping_links(main_module):
+    assert main_module.merchant_url("https://shop.example/products/item") == "https://shop.example/products/item"
+    assert main_module.merchant_url("https://www.google.com/search?ibp=oshop&q=item") is None
+
+
 def test_item_input_trims_fields_and_normalizes_currency(main_module, item_payload):
     item_payload.update(name="  Backpack  ", region="  NL ", currency=" eur ", notification_target="  a@b.cd ")
 
