@@ -255,6 +255,21 @@ def parse_price(value: str | int | float | None) -> Decimal | None:
         return None
 
 
+def titles_match(expected_title: str, candidate_title: str) -> bool:
+    """Require enough distinctive product terms to avoid nearby-item matches."""
+    def terms(value: str) -> set[str]:
+        return {
+            token for token in re.findall(r"[^\W_]+", value.casefold())
+            if (len(token) >= 3 or any(char.isdigit() for char in token)) and token not in {"maat", "size"}
+        }
+
+    expected = terms(expected_title)
+    candidate = terms(candidate_title)
+    shared = expected & candidate
+    minimum_shared = 1 if len(expected) == 1 else 2
+    return bool(expected and candidate) and len(shared) >= minimum_shared and len(shared) * 5 >= len(expected) * 3
+
+
 async def search_serpapi(item: WatchItem) -> list[SearchResult]:
     if not SERPAPI_API_KEY:
         raise RuntimeError("SERPAPI_API_KEY is not configured")
@@ -296,7 +311,10 @@ async def search_serpapi(item: WatchItem) -> list[SearchResult]:
             title=str(row.get("title") or item.name)[:500], retailer=str(row.get("source") or "Unknown retailer")[:240],
             price=price, currency=item.currency, deal_url=direct_url, immersive_page_token=page_token,
         ))
-    eligible = sorted((offer for offer in results if is_eligible(item, offer)), key=lambda offer: offer.price)
+    eligible = sorted(
+        (offer for offer in results if is_eligible(item, offer) and titles_match(item.name, offer.title)),
+        key=lambda offer: offer.price,
+    )
     if not eligible:
         return []
     best = eligible[0]
@@ -355,6 +373,7 @@ async def immersive_offer_url(item: WatchItem, offer: SearchResult) -> str | Non
         seller for seller in sellers
         if str(seller.get("name") or "").casefold() == offer.retailer.casefold()
         and parse_price(seller.get("extracted_price") or seller.get("price") or seller.get("base_price")) == offer.price
+        and titles_match(offer.title, str(seller.get("title") or ""))
     ]
     for seller in matching_sellers:
         direct_url = merchant_url(seller.get("direct_link") or seller.get("link"))

@@ -54,7 +54,7 @@ def test_search_serpapi_parses_offers_filters_unsafe_links_and_targets_iso_regio
     ]}
     monkeypatch.setattr(main_module.httpx, "AsyncClient", lambda **_: FakeAsyncClient(FakeResponse(payload), captured))
 
-    offers = asyncio.run(main_module.search_serpapi(make_item(main_module, region="NL")))
+    offers = asyncio.run(main_module.search_serpapi(make_item(main_module, name="Valid", region="NL")))
 
     assert captured["params"]["gl"] == "nl"
     assert "location" not in captured["params"]
@@ -68,12 +68,12 @@ def test_search_serpapi_resolves_immersive_product_to_matching_retailer(main_mod
     calls = []
     responses = [
         FakeResponse({"shopping_results": [{
-            "title": "Ash Tee", "source": "Aeden", "extracted_price": "29.95",
+            "title": "Aeden Ash Tee Aqua Grey", "source": "Aeden", "extracted_price": "29.95",
             "immersive_product_page_token": "immersive-token",
             "product_link": "https://www.google.com/search?ibp=oshop&q=Aeden+Ash+Tee",
         }]}),
         FakeResponse({"product_results": {"stores": [{
-            "name": "Aeden", "extracted_price": "29.95", "link": "https://aeden.nl/products/ash-tee",
+            "name": "Aeden", "title": "Aeden Ash Tee Aqua Grey", "extracted_price": "29.95", "link": "https://aeden.nl/products/ash-tee",
         }]}}),
     ]
 
@@ -90,7 +90,7 @@ def test_search_serpapi_resolves_immersive_product_to_matching_retailer(main_mod
 
     monkeypatch.setattr(main_module.httpx, "AsyncClient", lambda **_: ProductClient())
 
-    offers = asyncio.run(main_module.search_serpapi(make_item(main_module)))
+    offers = asyncio.run(main_module.search_serpapi(make_item(main_module, name="Aeden Ash Tee Aqua Grey maat M")))
 
     assert len(calls) == 2
     assert calls[1][1]["engine"] == "google_immersive_product"
@@ -98,10 +98,53 @@ def test_search_serpapi_resolves_immersive_product_to_matching_retailer(main_mod
     assert offers[0].deal_url == "https://aeden.nl/products/ash-tee"
 
 
+def test_search_serpapi_rejects_immersive_seller_for_a_different_product(main_module, monkeypatch):
+    responses = [
+        FakeResponse({"shopping_results": [{
+            "title": "Aeden Ash Tee Aqua Grey", "source": "Winkelstraat.nl", "extracted_price": "55.96",
+            "immersive_product_page_token": "immersive-token",
+        }]}),
+        FakeResponse({"product_results": {"stores": [{
+            "name": "Winkelstraat.nl", "title": "Aeden Jordan Tee Sand Beige", "extracted_price": "55.96",
+            "link": "https://www.winkelstraat.nl/designers/aeden/jordan-tee-sand-beige.html",
+        }]}}),
+    ]
+
+    class ProductClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_):
+            return None
+
+        async def get(self, *_, **__):
+            return responses.pop(0)
+
+    monkeypatch.setattr(main_module.httpx, "AsyncClient", lambda **_: ProductClient())
+
+    offers = asyncio.run(main_module.search_serpapi(make_item(main_module, name="Aeden Ash Tee Aqua Grey maat M")))
+
+    assert offers == []
+
+
+def test_search_serpapi_ignores_a_cheaper_result_for_a_different_product(main_module, monkeypatch):
+    captured = {}
+    payload = {"shopping_results": [
+        {"title": "Aeden Jordan Tee Sand Beige", "source": "Shop A", "extracted_price": "€55,96", "link": "https://a.example/jordan"},
+        {"title": "Aeden Ash Tee Aqua Grey", "source": "Shop B", "extracted_price": "€69,95", "link": "https://b.example/ash"},
+    ]}
+    monkeypatch.setattr(main_module.httpx, "AsyncClient", lambda **_: FakeAsyncClient(FakeResponse(payload), captured))
+
+    offers = asyncio.run(main_module.search_serpapi(make_item(main_module, name="Aeden Ash Tee Aqua Grey maat M")))
+
+    assert [offer.price for offer in offers] == [Decimal("69.95")]
+    assert offers[0].deal_url == "https://b.example/ash"
+
+
 def test_search_serpapi_reuses_stored_direct_url_for_unchanged_retailer_and_price(main_module, monkeypatch):
     calls = []
     payload = {"shopping_results": [{
-        "title": "Ash Tee", "source": "Aeden", "extracted_price": "29.95",
+        "title": "Aeden Ash Tee Aqua Grey", "source": "Aeden", "extracted_price": "29.95",
         "immersive_product_page_token": "immersive-token", "product_link": "https://www.google.com/shopping/product/12111129819258340978",
     }]}
 
@@ -116,7 +159,7 @@ def test_search_serpapi_reuses_stored_direct_url_for_unchanged_retailer_and_pric
             calls.append((url, params))
             return FakeResponse(payload)
 
-    item = make_item(main_module, current_price=Decimal("29.95"), current_retailer="Aeden", current_deal_url="https://aeden.nl/products/ash-tee")
+    item = make_item(main_module, name="Aeden Ash Tee Aqua Grey maat M", current_price=Decimal("29.95"), current_retailer="Aeden", current_deal_url="https://aeden.nl/products/ash-tee")
     monkeypatch.setattr(main_module.httpx, "AsyncClient", lambda **_: CachedOfferClient())
 
     offers = asyncio.run(main_module.search_serpapi(item))
@@ -128,8 +171,8 @@ def test_search_serpapi_reuses_stored_direct_url_for_unchanged_retailer_and_pric
 def test_search_serpapi_returns_only_the_lowest_valid_offer(main_module, monkeypatch):
     captured = {}
     payload = {"shopping_results": [
-        {"title": "Expensive", "source": "Shop A", "extracted_price": "€99,99", "link": "https://a.example/deal"},
-        {"title": "Lowest", "source": "Shop B", "extracted_price": "€49,99", "link": "https://b.example/deal"},
+        {"title": "Backpack Expensive", "source": "Shop A", "extracted_price": "€99,99", "link": "https://a.example/deal"},
+        {"title": "Backpack Lowest", "source": "Shop B", "extracted_price": "€49,99", "link": "https://b.example/deal"},
     ]}
     monkeypatch.setattr(main_module.httpx, "AsyncClient", lambda **_: FakeAsyncClient(FakeResponse(payload), captured))
 
@@ -142,9 +185,9 @@ def test_search_serpapi_returns_only_the_lowest_valid_offer(main_module, monkeyp
 def test_search_serpapi_returns_lowest_offer_within_target_range(main_module, monkeypatch):
     captured = {}
     payload = {"shopping_results": [
-        {"title": "Below minimum", "source": "Shop A", "extracted_price": "€172,85", "link": "https://a.example/deal"},
-        {"title": "In range", "source": "Shop B", "extracted_price": "€250,00", "link": "https://b.example/deal"},
-        {"title": "Higher", "source": "Shop C", "extracted_price": "€300,00", "link": "https://c.example/deal"},
+        {"title": "Backpack Below minimum", "source": "Shop A", "extracted_price": "€172,85", "link": "https://a.example/deal"},
+        {"title": "Backpack In range", "source": "Shop B", "extracted_price": "€250,00", "link": "https://b.example/deal"},
+        {"title": "Backpack Higher", "source": "Shop C", "extracted_price": "€300,00", "link": "https://c.example/deal"},
     ]}
     monkeypatch.setattr(main_module.httpx, "AsyncClient", lambda **_: FakeAsyncClient(FakeResponse(payload), captured))
 

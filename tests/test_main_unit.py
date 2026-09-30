@@ -30,6 +30,11 @@ def test_merchant_url_accepts_direct_merchant_links_and_rejects_google_shopping_
     assert main_module.merchant_url("https://www.google.com/search?ibp=oshop&q=item") is None
 
 
+def test_titles_match_requires_distinctive_product_terms(main_module):
+    assert main_module.titles_match("Aeden Ash Tee Aqua Grey maat M", "Aeden Ash Tee Aqua Grey")
+    assert not main_module.titles_match("Aeden Ash Tee Aqua Grey maat M", "Aeden Jordan Tee Sand Beige")
+
+
 def test_immersive_page_token_reads_the_field_or_serpapi_url(main_module):
     assert main_module.immersive_page_token({"immersive_product_page_token": "direct-token"}) == "direct-token"
     assert main_module.immersive_page_token({"serpapi_immersive_product_api": "https://serpapi.com/search.json?engine=google_immersive_product&page_token=url-token"}) == "url-token"

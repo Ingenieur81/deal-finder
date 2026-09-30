@@ -78,6 +78,7 @@ The UI uses the same authenticated API: `GET/POST /api/items`, `PUT/DELETE /api/
 ## Price and notification rules
 
 - Only the lowest valid HTTP(S) offer within the configured minimum/maximum range is retained. An offer below the minimum does not become the current price or comparison baseline.
+- A result must sufficiently match the watched product name. When a retailer URL is resolved through Google's product details, the retailer, price, and seller title must also match; uncertain links are discarded rather than notified.
 - Every accepted lowest result is stored in price history. The overview shows the target range plus the current lowest price, retailer, and a link on the item name.
 - The first accepted result is a baseline, not a notification. A subsequent accepted result alerts only when its price is strictly lower than the previous accepted result.
 - If an accepted numeric price remains unchanged for seven days, the next successful check refreshes the displayed offer and sends a reminder. A failed reminder delivery is retried on the next scheduled check.
